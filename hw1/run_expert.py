@@ -5,68 +5,41 @@ Code to load an expert policy and generate roll-out data for behavioral cloning.
 Example usage:
     python run_expert.py experts/Humanoid-v1.pkl Humanoid-v1 --render \
             --num_rollouts 20
-
 Author of this script and included expert policies: Jonathan Ho (hoj@openai.com)
 """
+# "run_expert.py" script code by Jonathan Ho (hoj@openai.com) moved to
+# ExpertAgent.gather_experience method in "rl_agent.py"
 
-import pickle
-import tensorflow as tf
-import numpy as np
-import tf_util
-import gym
-import load_policy
+import argparse
+from agents.rl_agent import ExpertAgent
+
+
+def run_expert():
+    expert_inputs = [('Ant-v1', 'experts/Ant-v1.pkl', False, 10),
+                     ('HalfCheetah-v1', 'experts/HalfCheetah-v1.pkl', False, 10),
+                     ('Hopper-v1', 'experts/Hopper-v1.pkl', False, 10),
+                     ('Humanoid-v1', 'experts/Humanoid-v1.pkl', False, 10),
+                     ('Reacher-v1', 'experts/Reacher-v1.pkl', False, 10),
+                     ('Walker2d-v1', 'experts/Walker2d-v1.pkl', False, 10)]
+
+    agent = ExpertAgent(output_dir='experts_experience')
+    for env_name, expert_policy_filename, render, num_rollouts in expert_inputs:
+        agent.gather_experience(env_name, expert_policy_filename, render, num_rollouts=num_rollouts)
+
 
 def main():
-    import argparse
     parser = argparse.ArgumentParser()
-    parser.add_argument('expert_policy_file', type=str)
     parser.add_argument('envname', type=str)
+    parser.add_argument('expert_policy_file', type=str)
     parser.add_argument('--render', action='store_true')
     parser.add_argument("--max_timesteps", type=int)
-    parser.add_argument('--num_rollouts', type=int, default=20,
-                        help='Number of expert roll outs')
+    parser.add_argument('--num_rollouts', type=int, default=20, help='Number of expert roll outs')
     args = parser.parse_args()
 
-    print('loading and building expert policy')
-    policy_fn = load_policy.load_policy(args.expert_policy_file)
-    print('loaded and built')
+    agent = ExpertAgent(output_dir='experts_experience')
+    agent.gather_experience(args.envname, args.expert_policy_file, args.render,
+                            args.max_timesteps, args.num_rollouts)
 
-    with tf.Session():
-        tf_util.initialize()
-
-        import gym
-        env = gym.make(args.envname)
-        max_steps = args.max_timesteps or env.spec.timestep_limit
-
-        returns = []
-        observations = []
-        actions = []
-        for i in range(args.num_rollouts):
-            print('iter', i)
-            obs = env.reset()
-            done = False
-            totalr = 0.
-            steps = 0
-            while not done:
-                action = policy_fn(obs[None,:])
-                observations.append(obs)
-                actions.append(action)
-                obs, r, done, _ = env.step(action)
-                totalr += r
-                steps += 1
-                if args.render:
-                    env.render()
-                if steps % 100 == 0: print("%i/%i"%(steps, max_steps))
-                if steps >= max_steps:
-                    break
-            returns.append(totalr)
-
-        print('returns', returns)
-        print('mean return', np.mean(returns))
-        print('std of return', np.std(returns))
-
-        expert_data = {'observations': np.array(observations),
-                       'actions': np.array(actions)}
 
 if __name__ == '__main__':
     main()

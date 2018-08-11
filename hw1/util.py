@@ -1,3 +1,9 @@
+import os
 
-def util_1():
-    pass
+# make directory relative to process working directory
+def mkdir_rel(dir):
+    dir = os.path.join(os.getcwd(), dir)
+    try:
+        os.mkdir(dir)
+    except OSError:
+        pass
