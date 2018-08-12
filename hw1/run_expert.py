@@ -24,7 +24,7 @@ def run_expert():
 
     agent = ExpertAgent(output_dir='experts_experience')
     for env_name, expert_policy_filename, render, num_rollouts in expert_inputs:
-        agent.gather_experience(env_name, expert_policy_filename, render, num_rollouts=num_rollouts)
+        agent.generate_experience(env_name,expert_policy_filename,num_rollouts,render)
 
 
 def main():
@@ -37,8 +37,8 @@ def main():
     args = parser.parse_args()
 
     agent = ExpertAgent(output_dir='experts_experience')
-    agent.gather_experience(args.envname, args.expert_policy_file, args.render,
-                            args.max_timesteps, args.num_rollouts)
+    agent.generate_experience(args.envname, args.expert_policy_file,
+                              args.num_rollouts,args.render,args.max_timesteps)
 
 
 if __name__ == '__main__':
