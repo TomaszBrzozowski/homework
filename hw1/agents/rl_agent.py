@@ -1,6 +1,8 @@
 import tensorflow as tf
 import numpy as np
 import gym
+from gym import wrappers
+
 import load_policy
 import tf_util
 import pickle
@@ -19,8 +21,7 @@ class RlAgent:
         self.timestep = None
         self.episode = None
 
-    def gather_experience(self,env,num_rollouts,max_timesteps=None,render=False,sess=None,progbar=False,cout=False):
-        max_steps = max_timesteps or env.spec.timestep_limit
+    def gather_experience(self,env,num_rollouts,max_steps=None,render=False,sess=None,progbar=False,cout=False):
         returns = []
         observations = []
         actions = []
@@ -77,14 +78,16 @@ class ExpertAgent(RlAgent):
         pass
     def load_policy(self,expert_policy_filename):
         self.expert_policy_fn = load_policy.load_policy(expert_policy_filename)
-    def generate_experience(self,env_name,expert_policy_filename,num_rollouts,render=False,max_timesteps=None,output_dir=None,cout=False):
+    def generate_experience(self,env_name,expert_policy_filename,num_rollouts,render=False,max_timesteps=None,output_dir=None,cout=False,record=False):
         if output_dir is not None:
             self.output_dir=output_dir
 
+        env = gym.make(env_name)
+        if record: env = wrappers.Monitor(env,self.output_dir,force=True,mode='evaluation')
         with tf.Session():
             tf_util.initialize()
             self.load_policy(expert_policy_filename)
-            self.experience = self.gather_experience(gym.make(env_name),num_rollouts,max_timesteps,render,progbar=(not cout),cout=cout)
+            self.experience = self.gather_experience(env,num_rollouts,max_timesteps,render,progbar=(not cout),cout=cout)
             print('mean return:', self.experience['mean'], 'std of return:', self.experience['std'])
         self.save_experience('{}-{}_rollouts.pkl'.format(env_name, num_rollouts))
 
@@ -114,10 +117,11 @@ class ImitationAgent(RlAgent):
 
 class CloningAgent(ImitationAgent):
     def clone_expert(self,env_name,expert_experience_filename,model_output_dir=None,learning_rate=0.001,drop_prob=0.75,batch_size=64,num_epochs=10,
-                     num_test_rollouts=10,restore=True,render=None,max_timesteps=None,save_exp=False, progbar=False, cout=False):
+                     num_test_rollouts=10,restore=True,render=None,max_timesteps=None,save_exp=False, progbar=False, cout=False,record=True):
         if model_output_dir == None:
             model_output_dir = self.output_dir
         env = gym.make(env_name)
+        max_steps = max_timesteps or env.spec.timestep_limit
 
         expert_experience = self.load_experience(expert_experience_filename)
         X,y = expert_experience['observations'], expert_experience['actions']
@@ -127,20 +131,22 @@ class CloningAgent(ImitationAgent):
         tf.reset_default_graph()
         with tf.Session() as sess:
             self.epoch, self.timestep = self.get_model(X_train, X_train.shape[1], y_train.shape[1], model_output_dir, learning_rate, batch_size, sess, restore)
+            print("Env = {} | Current epoch = {} | timestep = {}".format(env_name,self.epoch, self.timestep))
             if self.epoch<num_epochs:
                 writer = tf.summary.FileWriter(model_output_dir, sess.graph)
             tf_util.initialize()
             if progbar: pb = pbar(num_epochs)
+            if record: envw = wrappers.Monitor(env,self.output_dir,force=True,mode='evaluation')
             while self.epoch<num_epochs:
                 if progbar: pb.update()
                 self.timestep, t_loss = self.model.run_model(sess, writer, self.epoch, self.timestep,X_train,y_train,'train',drop_prob)
                 self.timestep, v_loss = self.model.run_model(sess, writer, self.epoch, self.timestep,X_test,y_test,'eval')
-                reward_curr = self.gather_experience(env,1,max_timesteps,render,sess,progbar=False)['mean']
+                reward_curr = self.gather_experience(env,1,max_steps,render,sess,progbar=False)['mean']
                 print("Epoch {0}/{1}: Train_loss = {2:.6f} | Val_loss = {3:.6f} | Reward = {4:.5f}".format(self.epoch,num_epochs-1,t_loss,v_loss,reward_curr))
                 self.epoch+=1
-            self.experience = self.gather_experience(env,num_test_rollouts,max_timesteps,render,sess,progbar=(not cout),cout=cout)
+            self.experience = self.gather_experience(envw,num_test_rollouts,max_steps,render,sess,progbar=(not cout),cout=cout)
             if save_exp:
-                self.save_experience("{}-{}_rollouts.txt".format(env, num_test_rollouts), self.output_dir)
+                self.save_experience("{}-{}_rollouts.txt".format(env_name, num_test_rollouts), self.output_dir)
         try: writer.close()
         except: pass
         return self.epoch,self.experience['mean'], self.experience['std'], expert_experience['mean'], expert_experience['std']

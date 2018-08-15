@@ -44,9 +44,7 @@ class Model(object):
         if ckpt and ckpt.model_checkpoint_path:
             print("Restoring checkpoint: ",ckpt.model_checkpoint_path)
             self.saver.restore(sess, ckpt.model_checkpoint_path)
-            print("Current epoch = {} | timestep = {}".format(self.epoch.eval(),self.gstep.eval()))
             return self.epoch.eval(), self.gstep.eval()
-        print("Epoch = 0 | timestep = 0")
         return 0,0
 
     def get_model(self):

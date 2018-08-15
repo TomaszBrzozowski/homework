@@ -14,11 +14,11 @@ import argparse
 from agents.rl_agent import ExpertAgent
 
 
-def run_expert(envs,exps_rollouts,render=False,max_timesteps=None,cout=False):
+def run_expert(envs,exps_rollouts,render=False,max_timesteps=None,cout=False,record=False):
     assert len(envs) == len(exps_rollouts),"argument lists must be the same length"
     agent = ExpertAgent(output_dir='experts_experience')
     for env_name, num_rollouts in zip(envs,exps_rollouts):
-        agent.generate_experience(env_name,'experts/'+env_name+'.pkl',num_rollouts,render,max_timesteps,cout=cout)
+        agent.generate_experience(env_name,'experts/'+env_name+'.pkl',num_rollouts,render,max_timesteps,cout=cout,record=record)
 
 def run_expert_all():
     envs_list = ['Ant-v1','HalfCheetah-v1','Hopper-v1','Humanoid-v1','Reacher-v1','Walker2d-v1']
@@ -29,9 +29,10 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('-e','--envnames' ,nargs="*" ,type=str , default=['Ant-v1', ])
     parser.add_argument('-nr','--nums_rollouts' , nargs="*" , type=int ,default=[10, ])
-    parser.add_argument('--render', action='store_true')
+    parser.add_argument('-r','--render', action='store_true')
     parser.add_argument("--max_timesteps", type=int)
     parser.add_argument('-co','--cout_rollouts',action='store_true',help='display rollouts progress printed instead of progressbar')
+    parser.add_argument('-rec','--record',action='store_true',help='record rollouts videos')
     args = parser.parse_args()
 
-    run_expert(args.envnames,args.nums_rollouts,args.render,args.max_timesteps,args.cout_rollouts)
+    run_expert(args.envnames,args.nums_rollouts,args.render,args.max_timesteps,args.cout_rollouts,args.record)
