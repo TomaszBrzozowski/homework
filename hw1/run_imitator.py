@@ -3,16 +3,14 @@ import os
 import agents.rl_agent
 from util import mkdir_rel
 
-def run_imitator(cloner,envs,exps_rollouts,imits_epochs,pbar=False,cout=False):
-    assert len(envs) == len(exps_rollouts),"argument lists must be the same length"
+def run_imitator(cloner,envs,nums_rollouts,imits_epochs,pbar=False,cout=False):
+    assert len(envs) == len(nums_rollouts),"argument lists must be the same length"
     assert cloner==True, "must pass at least one imitator agent flag from the following: -c"
-    inputs = [(env,'experts_experience/'+env+'-'+str(exp_rollouts)+'_rollouts.pkl',exp_rollouts,epoch)
-              for env in envs for exp_rollouts in exps_rollouts for epoch in imits_epochs]
+    inputs = zip(envs,['experts_experience/'+env+'-'+str(nums_rollouts[i])+'_rollouts.pkl' for i,env in enumerate(envs)],nums_rollouts,imits_epochs)
     results = []
-
-    for env_name, expert_data, exp_rollouts, num_epochs in inputs:
+    for env_name, expert_data, num_rollouts, num_epochs in inputs:
         if cloner:
-            cloner_output_dir = os.path.join('imitators_data',env_name,'cloner',''+str(exp_rollouts)+'_exp_rollouts')
+            cloner_output_dir = os.path.join('imitators_data',env_name,'cloner',''+str(num_rollouts)+'_exp_rollouts')
             mkdir_rel(cloner_output_dir)
             cloner = agents.rl_agent.CloningAgent(cloner_output_dir)
             epoch, bc_mean, bc_std, ex_mean, ex_std = cloner.clone_expert(env_name,expert_data,restore=True,
@@ -21,7 +19,7 @@ def run_imitator(cloner,envs,exps_rollouts,imits_epochs,pbar=False,cout=False):
             with open('results.txt'.format(epoch),'a') as f:
                 for env_name , ex_mean , ex_std , bc_mean , bc_std in results:
                     f.writelines("Env = {0}, Expert: mean(std)={1:.5f}({2:.5f}), Cloner: mean(std)={3:.5f}({4:.5f}) exp_rolls={5} n_epochs={6}\n"
-                                 .format(env_name, ex_mean , ex_std , bc_mean , bc_std, exp_rollouts, epoch))
+                                 .format(env_name, ex_mean , ex_std , bc_mean , bc_std, num_rollouts, epoch))
 
 def run_imitator_all():
     envs_list = ['Ant-v1','HalfCheetah-v1','Hopper-v1','Humanoid-v1','Reacher-v1','Walker2d-v1']
@@ -32,12 +30,12 @@ def run_imitator_all():
 if __name__ == '__main__':
     CLI = argparse.ArgumentParser()
     CLI.add_argument('-c','--cloner',action='store_true',help='run cloner')
-    CLI.add_argument('-e','--envs' ,nargs="*" ,type=str , default=['Ant-v1', ])
-    CLI.add_argument('-er','--exp_rollouts' , nargs="*" , type=int ,default=[10, ])
+    CLI.add_argument('-e','--envnames' ,nargs="*" ,type=str , default=['Ant-v1', ])
+    CLI.add_argument('-nr','--nums_rollouts' , nargs="*" , type=int ,default=[10, ])
     CLI.add_argument('-ne','--nums_epochs' , nargs="*" , type=int ,default=[50, ])
     CLI.add_argument('-pb','--progressbar',action='store_true',help='display epochs progressbar')
-    CLI.add_argument('-co','--cout_rollouts',action='store_true',help='display rollouts cout instead of progressbar')
+    CLI.add_argument('-co','--cout_rollouts',action='store_true',help='display rollouts progress printed instead of progressbar')
     args = CLI.parse_args()
 
-    run_imitator(args.cloner,args.envs,args.exp_rollouts,args.nums_epochs,args.progressbar,args.cout_rollouts)
+    run_imitator(args.cloner,args.envnames,args.nums_rollouts,args.nums_epochs,args.progressbar,args.cout_rollouts)
     # main()
