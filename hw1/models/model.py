@@ -1,7 +1,7 @@
 import tensorflow as tf
-import time
 from util import mkdir_rel
 import numpy as np
+
 
 class Model(object):
     def __init__(self, x_train, observations_dim, actions_dim, checkpoint_dir, learning_rate, batch_size):
@@ -10,7 +10,6 @@ class Model(object):
         self.input_obs = tf.placeholder(tf.float32, [None, observations_dim], name='observations')
         self.input_actions = tf.placeholder(tf.float32, [None, actions_dim], name='actions')
         self.drop_prob = tf.placeholder(tf.float32 , name='drop_probability')
-        # self.keep_prob =1.0
         self.mean_obs, self.var_obs = x_train.mean(axis=0), x_train.std(axis=0)
         self.gstep = tf.Variable(0, dtype=tf.int32,trainable=False, name='global_step')
         self.epoch = tf.Variable(0, dtype=tf.int32, name='epoch')
@@ -30,7 +29,6 @@ class Model(object):
             dataset = tf.data.Dataset.from_tensor_slices((self.input_obs, self.input_actions)).batch(self.batch_size)
             iter = dataset.make_initializable_iterator()
             self.x, self.y = iter.get_next()
-            # self.obs = tf.expand_dims(self.obs,0)
             self.x = tf.reshape(self.x, shape=[-1, self.observations_dim])
             self.y = tf.reshape(self.y, shape=[-1, self.actions_dim])
             return iter
@@ -102,8 +100,6 @@ class Model(object):
         self.epoch.load(epoch+1,sess)
         self.gstep.load(step,sess)
         self.save(sess)
-        # print('Average {0} loss at epoch {1}: {2:.10f}  Took: {3:.2f}s'.format(mode,epoch, total_loss / n_batches,
-        #                                                                time.time() - start_time))
         return step, total_loss / n_batches
 
     def var_summary(self, name):

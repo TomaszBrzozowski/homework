@@ -1,13 +1,11 @@
 import tensorflow as tf
 import numpy as np
 import gym
-from gym import wrappers
-
 import load_policy
 import tf_util
 import pickle
 import os
-
+from gym import wrappers
 from sklearn.model_selection import train_test_split
 from models.model import Model
 from util import mkdir_rel,pbar
@@ -50,6 +48,7 @@ class RlAgent:
         mean_returns, std_returns = np.mean(returns), np.std(returns)
         return {'observations': np.array(observations), 'actions': np.array(actions), 'mean': mean_returns,
                        'std': std_returns}
+
     def save_experience(self,filename,output_dir=None):
         raise NotImplementedError
     def policy(self,observations,sess=None):
@@ -61,23 +60,28 @@ class RlAgent:
     def restore_model(self,sess):
         raise NotImplementedError
 
+
 class ExpertAgent(RlAgent):
-    def __init__(self,output_dir=None):
+    def __init__(self,output_dir=None,expert_policy_filename=None):
         super().__init__(output_dir=output_dir)
-        self.expert_policy_fn=None
+        if expert_policy_filename is not None: self.load_policy(expert_policy_filename)
+
     def save_experience(self,filename,output_dir=None):
         if output_dir is not None:
             self.output_dir=output_dir
         mkdir_rel(self.output_dir)
         with open(self.output_dir + '/' + filename, 'wb') as f:
             pickle.dump(self.experience, f)
+
     def policy(self,observations,sess=None):
         return self.expert_policy_fn(observations)
+
     def get_model(self, x_train=None, observations_dim=None, actions_dim=None, checkpoint_dir=None, learning_rate=None,
-                  batch_size=None, sess=None):
-        pass
+                  batch_size=None, sess=None): pass
+
     def load_policy(self,expert_policy_filename):
         self.expert_policy_fn = load_policy.load_policy(expert_policy_filename)
+
     def generate_experience(self,env_name,expert_policy_filename,num_rollouts,render=False,max_timesteps=None,output_dir=None,cout=False,record=False):
         if output_dir is not None:
             self.output_dir=output_dir
@@ -91,36 +95,38 @@ class ExpertAgent(RlAgent):
             print('mean return:', self.experience['mean'], 'std of return:', self.experience['std'])
         self.save_experience('{}-{}_rollouts.pkl'.format(env_name, num_rollouts))
 
-class ImitationAgent(RlAgent):
+
+class CloningAgent(RlAgent):
     def save_experience(self,filename,output_dir=None):
         if output_dir is not None:
             self.output_dir=output_dir
         mkdir_rel(output_dir)
         with open(output_dir + '/' + filename) as f:
             f.write(self.experience['mean']+''+self.experience['std'])
+
     def get_model(self,x_train=None, observations_dim=None, actions_dim=None, checkpoint_dir=None, learning_rate=None, batch_size=None,sess=None,restore=True):
         self.model = Model(x_train, observations_dim, actions_dim, checkpoint_dir, learning_rate, batch_size)
-        if restore:
-            return self.model.restore(sess)
+        if restore: return self.model.restore(sess)
         return 0,0
+
     def policy(self,observations,sess=None):
         return self.model.predict(observations,sess)
+
     def save_model(self,sess):
         self.model.save(sess)
+
     def restore_model(self,sess):
         self.model.restore(sess)
+
     def load_experience(self,expert_experience_filename):
         with open(expert_experience_filename, 'rb') as f:
             return pickle.loads(f.read())
-    def clone_expert(self,env_name,expert_experience_filename,render=None,max_timesteps=None,num_rollouts=None,output_dir=None):
-        raise NotImplementedError
 
-class CloningAgent(ImitationAgent):
     def clone_expert(self,env_name,expert_experience_filename,model_output_dir=None,learning_rate=0.001,drop_prob=0.75,batch_size=64,num_epochs=10,
                      num_test_rollouts=10,restore=True,render=None,max_timesteps=None,save_exp=False, progbar=False, cout=False,record=True):
         if model_output_dir == None:
             model_output_dir = self.output_dir
-        env = gym.make(env_name)
+        env = envw =  gym.make(env_name)
         max_steps = max_timesteps or env.spec.timestep_limit
 
         expert_experience = self.load_experience(expert_experience_filename)
@@ -141,16 +147,24 @@ class CloningAgent(ImitationAgent):
                 if progbar: pb.update()
                 self.timestep, t_loss = self.model.run_model(sess, writer, self.epoch, self.timestep,X_train,y_train,'train',drop_prob)
                 self.timestep, v_loss = self.model.run_model(sess, writer, self.epoch, self.timestep,X_test,y_test,'eval')
-                reward_curr = self.gather_experience(env,1,max_steps,render,sess,progbar=False)['mean']
-                print("Epoch {0}/{1}: Train_loss = {2:.6f} | Val_loss = {3:.6f} | Reward = {4:.5f}".format(self.epoch,num_epochs-1,t_loss,v_loss,reward_curr))
+                imit_exp = self.gather_experience(env,1,max_steps,render,sess,progbar=False)
+                X_train,y_train = self.dagger(X_train,y_train,imit_exp,env_name)
+                print("Epoch {0}/{1}: Train_loss = {2:.6f} | Val_loss = {3:.6f} | Reward = {4:.5f}".format(self.epoch,num_epochs-1,t_loss,v_loss,imit_exp['mean']))
                 self.epoch+=1
             self.experience = self.gather_experience(envw,num_test_rollouts,max_steps,render,sess,progbar=(not cout),cout=cout)
             if save_exp:
                 self.save_experience("{}-{}_rollouts.txt".format(env_name, num_test_rollouts), self.output_dir)
-        try: writer.close()
-        except: pass
-        return self.epoch,self.experience['mean'], self.experience['std'], expert_experience['mean'], expert_experience['std']
+        if self.epoch<num_epochs: writer.close()
+        return expert_experience['mean'], expert_experience['std'],self.experience['mean'], self.experience['std'], self.epoch
 
-class DaggerAgent(ImitationAgent):
-    def clone_expert(self,env_name,expert_experience_filename,render=None,max_timesteps=None,num_rollouts=None,output_dir=None):
-        pass
+    def dagger(self,X_train=None,y_train=None,imit_exp=None,env_name=None):
+        return X_train, y_train
+
+
+class DaggerAgent(CloningAgent):
+    def dagger(self,X_train=None,y_train=None,imit_exp=None,env_name=None):
+        exp_policy_file = os.path.abspath(os.path.join(os.path.dirname( __file__ ), '..', 'experts',env_name+'.pkl'))
+        dagg_actions = ExpertAgent(expert_policy_filename=exp_policy_file).policy(imit_exp['observations'])
+        X_train = np.concatenate((X_train,imit_exp['observations']),axis=0),
+        y_train = np.concatenate((y_train,dagg_actions),axis=0)
+        return X_train, y_train
