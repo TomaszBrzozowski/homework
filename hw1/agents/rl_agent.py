@@ -53,7 +53,7 @@ class RlAgent:
         raise NotImplementedError
     def policy(self,observations,sess=None):
         raise NotImplementedError
-    def get_model(self,x_train=None, observations_dim=None, actions_dim=None, checkpoint_dir=None, learning_rate=None, batch_size=None,sess=None):
+    def get_model(self,x_train=None,obs_dim=None,actions_dim=None,checkpoint_dir=None,learning_rate=None,batch_size=None,sess=None):
         raise NotImplementedError
     def save_model(self,sess):
         raise NotImplementedError
@@ -76,13 +76,14 @@ class ExpertAgent(RlAgent):
     def policy(self,observations,sess=None):
         return self.expert_policy_fn(observations)
 
-    def get_model(self, x_train=None, observations_dim=None, actions_dim=None, checkpoint_dir=None, learning_rate=None,
-                  batch_size=None, sess=None): pass
+    def get_model(self,x_train=None,obs_dim=None,actions_dim=None,checkpoint_dir=None,learning_rate=None,
+                  batch_size=None,sess=None): pass
 
     def load_policy(self,expert_policy_filename):
         self.expert_policy_fn = load_policy.load_policy(expert_policy_filename)
 
-    def generate_experience(self,env_name,expert_policy_filename,num_rollouts,render=False,max_timesteps=None,output_dir=None,cout=False,record=False):
+    def generate_experience(self,env_name,expert_policy_filename,num_rollouts,render=False,max_timesteps=None,
+                            output_dir=None,cout=False,record=False):
         if output_dir is not None:
             self.output_dir=output_dir
 
@@ -104,8 +105,9 @@ class CloningAgent(RlAgent):
         with open(output_dir + '/' + filename) as f:
             f.write(self.experience['mean']+''+self.experience['std'])
 
-    def get_model(self,x_train=None, observations_dim=None, actions_dim=None, checkpoint_dir=None, learning_rate=None, batch_size=None,sess=None,restore=True):
-        self.model = Model(x_train, observations_dim, actions_dim, checkpoint_dir, learning_rate, batch_size)
+    def get_model(self,x_train=None,obs_dim=None,actions_dim=None,checkpoint_dir=None,learning_rate=None,batch_size=None,
+                  layers=None,sess=None,restore=True):
+        self.model = Model(x_train,obs_dim,actions_dim,checkpoint_dir,learning_rate,batch_size,layers)
         if restore: return self.model.restore(sess)
         return 0,0
 
@@ -122,8 +124,9 @@ class CloningAgent(RlAgent):
         with open(expert_experience_filename, 'rb') as f:
             return pickle.loads(f.read())
 
-    def clone_expert(self,env_name,expert_experience_filename,model_output_dir=None,learning_rate=0.001,drop_prob=0.75,batch_size=64,num_epochs=10,
-                     num_test_rollouts=10,restore=True,render=None,max_timesteps=None,save_exp=False, progbar=False, cout=False,record=True):
+    def clone_expert(self,env_name,expert_experience_filename,model_output_dir=None,layers=[64,0],batch_size=64,
+                     drop_prob=0.75,learning_rate=0.001,num_epochs=10,num_test_rollouts=10,restore=True,render=None,
+                     max_timesteps=None,save_exp=False, progbar=False, cout=False,record=True):
         if model_output_dir == None:
             model_output_dir = self.output_dir
         env = envw =  gym.make(env_name)
@@ -137,8 +140,9 @@ class CloningAgent(RlAgent):
 
         tf.reset_default_graph()
         with tf.Session() as sess:
-            self.epoch, self.timestep = self.get_model(X_train, X_train.shape[1], y_train.shape[1], model_output_dir, learning_rate, batch_size, sess, restore)
-            print("Env = {} | Current epoch = {} | timestep = {}".format(env_name,self.epoch, self.timestep))
+            self.epoch, self.timestep = self.get_model(X_train, X_train.shape[1], y_train.shape[1], model_output_dir, learning_rate,
+                                                       batch_size,layers, sess, restore)
+            print("Env = {} | {} | Current epoch = {} | timestep = {}".format(env_name,self.__class__.__name__,self.epoch, self.timestep))
             if self.epoch<num_epochs:
                 writer = tf.summary.FileWriter(model_output_dir, sess.graph)
             tf_util.initialize()
@@ -150,13 +154,14 @@ class CloningAgent(RlAgent):
                 self.timestep, v_loss = self.model.run_model(sess, writer, self.epoch, self.timestep,X_test,y_test,'eval')
                 imit_exp = self.gather_experience(env,1,max_steps,render,sess,progbar=False)
                 X_train,y_train = self.dagger(X_train,y_train,imit_exp,env_name)
-                print("Epoch {0}/{1}: Train_loss = {2:.6f} | Val_loss = {3:.6f} | Reward = {4:.5f}".format(self.epoch,num_epochs-1,t_loss,v_loss,imit_exp['mean']))
+                print("Epoch {0}/{1}: Train_loss = {2:.6f} | Val_loss = {3:.6f} | Reward = {4:.5f}"
+                      .format(self.epoch,num_epochs-1,t_loss,v_loss,imit_exp['mean']))
                 self.epoch+=1
             self.experience = self.gather_experience(envw,num_test_rollouts,max_steps,render,sess,progbar=(not cout),cout=cout)
             if save_exp:
                 self.save_experience("{}-{}_rollouts.txt".format(env_name, num_test_rollouts), self.output_dir)
         if self.epoch<num_epochs: writer.close()
-        return expert_experience['mean'], expert_experience['std'],self.experience['mean'], self.experience['std'], self.epoch
+        return expert_experience['mean'], expert_experience['std'],self.experience['mean'], self.experience['std'], self.epoch, self.timestep
 
     def dagger(self,X_train=None,y_train=None,imit_exp=None,env_name=None):
         return X_train, y_train

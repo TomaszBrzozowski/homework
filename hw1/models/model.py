@@ -1,13 +1,15 @@
 import tensorflow as tf
+from tensorflow.contrib import slim
+
 from util import mkdir_rel
 import numpy as np
 
 
 class Model(object):
-    def __init__(self, x_train, observations_dim, actions_dim, checkpoint_dir, learning_rate, batch_size):
-        self.observations_dim = observations_dim
+    def __init__(self,x_train,obs_dim,actions_dim,checkpoint_dir,learning_rate,batch_size,layers):
+        self.observations_dim = obs_dim
         self.actions_dim = actions_dim
-        self.input_obs = tf.placeholder(tf.float32, [None, observations_dim], name='observations')
+        self.input_obs = tf.placeholder(tf.float32,[None,obs_dim],name='observations')
         self.input_actions = tf.placeholder(tf.float32, [None, actions_dim], name='actions')
         self.drop_prob = tf.placeholder(tf.float32 , name='drop_probability')
         self.mean_obs, self.var_obs = x_train.mean(axis=0), x_train.std(axis=0)
@@ -18,7 +20,7 @@ class Model(object):
         self.lr = tf.train.exponential_decay(learning_rate,self.gstep,100,0.99)
         self.x, self.y = None, None
         self.iter = self.get_dataset_iterator()
-        self.pred = self.get_model()
+        self.pred = self.get_model(layers)
         self.loss = self.get_loss()
         self.opt = self.get_optimizer()
         self.saver = tf.train.Saver()
@@ -45,12 +47,17 @@ class Model(object):
             return self.epoch.eval(), self.gstep.eval()
         return 0,0
 
-    def get_model(self):
-        obs_normalized = (self.x - self.mean_obs) / self.var_obs
-        nn = tf.layers.dense(obs_normalized, 64, tf.nn.relu,kernel_initializer=
-            tf.contrib.layers.variance_scaling_initializer(factor=1.0, mode='FAN_AVG', uniform=False),name='fc1')
-        nn = tf.layers.dropout(nn , self.drop_prob , name='drop1')
-        return tf.layers.dense(nn, self.actions_dim, name='pred')
+    def get_model(self,layers):
+        obs_normalized = (self.x - self.mean_obs) / (self.var_obs +1e-6)
+        fc_nr = 1
+        nn = slim.fully_connected(obs_normalized,self.actions_dim,scope='fc' + str(fc_nr),activation_fn=tf.nn.relu)
+        for num_inputs in layers[1:]:
+            if num_inputs != 0:
+                fc_nr+=1
+                nn = slim.fully_connected(nn,self.actions_dim,scope='fc'+str(fc_nr),activation_fn=tf.nn.relu)
+            else:
+                nn = slim.dropout(nn,self.drop_prob)
+        return slim.fully_connected(nn,self.actions_dim,scope='pred',activation_fn=tf.nn.relu)
 
     def get_loss(self):
         with tf.name_scope('loss'):
