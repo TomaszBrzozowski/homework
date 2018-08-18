@@ -131,6 +131,7 @@ class CloningAgent(RlAgent):
 
         expert_experience = self.load_experience(expert_experience_filename)
         X,y = expert_experience['observations'], expert_experience['actions']
+        if X.shape[0]==1: X = np.squeeze(X,axis=(0,))
         y = np.reshape(y,(y.shape[0],y.shape[1]*y.shape[2]))
         X_train, X_test, y_train, y_test = train_test_split(X, y, test_size = 0.25)
 
@@ -164,7 +165,9 @@ class CloningAgent(RlAgent):
 class DaggerAgent(CloningAgent):
     def dagger(self,X_train=None,y_train=None,imit_exp=None,env_name=None):
         exp_policy_file = os.path.abspath(os.path.join(os.path.dirname( __file__ ), '..', 'experts',env_name+'.pkl'))
-        dagg_actions = ExpertAgent(expert_policy_filename=exp_policy_file).policy(imit_exp['observations'])
-        X_train = np.concatenate((X_train,imit_exp['observations']),axis=0),
+        X = imit_exp['observations']
+        if X.shape[0]==1: X = np.squeeze(X,axis=(0,))
+        dagg_actions = ExpertAgent(expert_policy_filename=exp_policy_file).policy(X)
+        X_train = np.concatenate((X_train,X),axis=0),
         y_train = np.concatenate((y_train,dagg_actions),axis=0)
-        return X_train, y_train
+        return np.squeeze(X_train,axis=0), y_train
