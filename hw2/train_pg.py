@@ -7,8 +7,8 @@ import os
 import time
 import inspect
 from gym import wrappers
-from multiprocessing import Process
 from pathos.multiprocessing import ProcessingPool
+from concurrent.futures import ThreadPoolExecutor,as_completed
 
 CONST = 1e-13
 #============================================================================================#
@@ -46,6 +46,50 @@ def build_mlp(
 def pathlength(path):
     return len(path["reward"])
 
+class EnvList(gym.Env):
+    def __init__(self, env_name, n_envs, logdir=None, record=False):
+        self.envs = [gym.make(env_name) for _ in range(n_envs)]
+        if record and logdir:
+            self.envs = [wrappers.Monitor(self.envs[i],logdir,force=True,mode='evaluation') for i in self.envs]
+        self.action_space = self.envs[0].action_space.n if self.discrete() else self.envs[0].action_space.shape[0]
+        self.observation_space = self.envs[0].observation_space.shape[0]
+    def discrete(self):
+        return isinstance(self.envs[0].action_space,gym.spaces.Discrete)
+    def reset(self,i=0):
+        return self.envs[i].reset()
+    def step(self, action,i=0):
+        return self.envs[i].step(action)
+
+class PathCollector():
+    def __init__(self,curr_timesteps,min_timesteps_per_batch,sess,symbolic_ac,symbolic_ob,max_path_length,):
+        self.curr_timesteps = curr_timesteps
+        self.min_timesteps_per_batch = min_timesteps_per_batch
+        self.sess = sess
+        self.symbolic_ac = symbolic_ac
+        self.symbolic_ob = symbolic_ob
+        self.max_path_length = max_path_length
+
+    def __call__(self,env,animate=False):
+        ob = env.reset()
+        obs,acs,rewards = [],[],[]
+        steps = 0
+        while (True) and (self.curr_timesteps<self.min_timesteps_per_batch):
+            if animate:
+                env.render()
+                time.sleep(0.05)
+            obs.append(ob)
+            ac = self.sess.run(self.symbolic_ac,feed_dict={self.symbolic_ob: ob[None]})
+            ac = ac[0]
+            acs.append(ac)
+            ob,rew,done,_ = env.step(ac)
+            rewards.append(rew)
+            steps += 1
+            self.curr_timesteps+=1
+            if done or steps > self.max_path_length:
+                break
+        path = {"observation": np.array(obs),"reward": np.array(rewards),"action": np.array(acs)}
+        env.close()
+        return path
 
 #============================================================================================#
 # Policy Gradient
@@ -67,8 +111,21 @@ def train_PG(exp_name='',
              # network arguments
              n_layers=1,
              size=32,
+             threads=1,
+             max_threads_pool=16,
+             thread_timeout=None,
+             min_timesteps_per_path=10,
              record=False
              ):
+
+    def n_threads_to_run(timesteps_this_batch):
+        tsteps_left = min_timesteps_per_batch - timesteps_this_batch
+        max_threads = int(
+            max(np.ceil((tsteps_left) / min_timesteps_per_path),np.ceil((tsteps_left) / max_path_length)))
+        if threads < 1 or threads>max_threads:
+            return max_threads
+        else:
+            return threads
 
     start = time.time()
 
@@ -86,15 +143,14 @@ def train_PG(exp_name='',
     tf.set_random_seed(seed)
     np.random.seed(seed)
 
+    # Maximum length for episodes
+    max_path_length = max_path_length or gym.make(env_name).spec.max_episode_steps
+
     # Make the gym environment
-    env = gym.make(env_name)
-    if record: envw = wrappers.Monitor(env,logdir,force=True,mode='evaluation')
+    env = EnvList(env_name,n_threads_to_run(0),logdir,record)
 
     # Is this env continuous, or discrete?
-    discrete = isinstance(env.action_space, gym.spaces.Discrete)
-
-    # Maximum length for episodes
-    max_path_length = max_path_length or env.spec.max_episode_steps
+    discrete = env.discrete()
 
     #========================================================================================#
     # Notes on notation:
@@ -114,8 +170,8 @@ def train_PG(exp_name='',
     #========================================================================================#
 
     # Observation and action sizes
-    ob_dim = env.observation_space.shape[0]
-    ac_dim = env.action_space.n if discrete else env.action_space.shape[0]
+    ob_dim = env.observation_space
+    ac_dim = env.action_space
 
     #========================================================================================#
     #                           ----------SECTION 4----------
@@ -234,36 +290,25 @@ def train_PG(exp_name='',
         timesteps_this_batch = 0
         paths = []
         while True:
-            ob = env.reset()
-            obs, acs, rewards = [], [], []
-            animate_this_episode=(len(paths)==0 and (itr % 10 == 0) and animate)
-            steps = 0
-            while True:
-                if animate_this_episode:
-                    env.render()
-                    time.sleep(0.05)
-                obs.append(ob)
-                ac = sess.run(sy_sampled_ac, feed_dict={sy_ob_no : ob[None]})
-                ac = ac[0]
-                acs.append(ac)
-                ob, rew, done, _ = env.step(ac)
-                rewards.append(rew)
-                steps += 1
-                if done or steps > max_path_length:
-                    break
-            path = {"observation" : np.array(obs),
-                    "reward" : np.array(rewards),
-                    "action" : np.array(acs)}
-            paths.append(path)
-            timesteps_this_batch += pathlength(path)
-            if timesteps_this_batch > min_timesteps_per_batch:
+            n_threads = n_threads_to_run(timesteps_this_batch)
+            col = PathCollector(timesteps_this_batch,min_timesteps_per_batch,sess,sy_sampled_ac,sy_ob_no,max_path_length)
+            if threads==1:
+                path = col.__call__(env,animate=(animate and len(paths) == 0 and itr%10))
+                paths.append(path)
+            else:
+                with ThreadPoolExecutor(max_threads_pool) as exec:
+                    futures = [exec.submit(col.__call__,e) for e in env.envs[:n_threads]]
+                    for future in as_completed(futures,timeout=thread_timeout):
+                        paths.append(future.result())
+            col_paths = paths[-n_threads:]
+            timesteps_this_batch += sum([pathlength(path) for path in col_paths])
+            if timesteps_this_batch >= min_timesteps_per_batch:
                 break
         total_timesteps += timesteps_this_batch
-
         # Build arrays for observation, action for the policy gradient update by concatenating
         # across paths
-        ob_no = np.concatenate([path["observation"] for path in paths])
-        ac_na = np.concatenate([path["action"] for path in paths])
+        ob_no = np.concatenate([path["observation"] for path in paths if pathlength(path) >0])
+        ac_na = np.concatenate([path["action"] for path in paths if pathlength(path) >0])
 
         #====================================================================================#
         #                           ----------SECTION 4----------
@@ -430,6 +475,10 @@ def main():
     parser.add_argument('--n_experiments', '-e', type=int, default=1)
     parser.add_argument('--n_layers', '-l', type=int, default=1)
     parser.add_argument('--size', '-s', type=int, default=32)
+    parser.add_argument('--threads', '-th', type=int, default=1)
+    parser.add_argument('--max_threads_pool', '-max_tp', type=int, default=16)
+    parser.add_argument('--thread_timeout', '-th_to', type=int, default=None)
+    parser.add_argument('--min_timesteps_per_path', '-min_st_p', type=int, default=100)
     parser.add_argument('--record', action='store_true')
     args = parser.parse_args()
 
@@ -441,6 +490,7 @@ def main():
         os.makedirs(logdir)
 
     max_path_length = args.ep_len if args.ep_len > 0 else None
+    start = time.time()
 
     for e in range(args.n_experiments):
         seed = args.seed + 10*e
@@ -462,6 +512,10 @@ def main():
                 seed=seed,
                 n_layers=args.n_layers,
                 size=args.size,
+                threads=args.threads,
+                max_threads_pool=args.max_threads_pool,
+                thread_timeout=args.thread_timeout,
+                min_timesteps_per_path=args.min_timesteps_per_path,
                 record=args.record
                 )
         # Awkward hacky process runs, because Tensorflow does not like
@@ -472,6 +526,7 @@ def main():
         p = ProcessingPool(1)
         p.apipe(train_func).get()
         p.clear()
+    print('All training took: {:.3f}s'.format(time.time()-start))
 
 if __name__ == "__main__":
     main()
