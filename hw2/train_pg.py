@@ -61,19 +61,16 @@ class EnvList(gym.Env):
         return self.envs[i].step(action)
 
 class PathCollector():
-    def __init__(self,curr_timesteps,min_timesteps_per_batch,sess,symbolic_ac,symbolic_ob,max_path_length,):
-        self.curr_timesteps = curr_timesteps
-        self.min_timesteps_per_batch = min_timesteps_per_batch
+    def __init__(self,sess,symbolic_ac,symbolic_ob,max_path_length,):
         self.sess = sess
         self.symbolic_ac = symbolic_ac
         self.symbolic_ob = symbolic_ob
         self.max_path_length = max_path_length
-
     def __call__(self,env,animate=False):
         ob = env.reset()
         obs,acs,rewards = [],[],[]
         steps = 0
-        while (True) and (self.curr_timesteps<self.min_timesteps_per_batch):
+        while (True):
             if animate:
                 env.render()
                 time.sleep(0.05)
@@ -84,7 +81,6 @@ class PathCollector():
             ob,rew,done,_ = env.step(ac)
             rewards.append(rew)
             steps += 1
-            self.curr_timesteps+=1
             if done or steps > self.max_path_length:
                 break
         path = {"observation": np.array(obs),"reward": np.array(rewards),"action": np.array(acs)}
@@ -120,8 +116,7 @@ def train_PG(exp_name='',
 
     def n_threads_to_run(timesteps_this_batch):
         tsteps_left = min_timesteps_per_batch - timesteps_this_batch
-        max_threads = int(
-            max(np.ceil((tsteps_left) / min_timesteps_per_path),np.ceil((tsteps_left) / max_path_length)))
+        max_threads = int(np.ceil((tsteps_left) / max_path_length))
         if threads < 1 or threads>max_threads:
             return max_threads
         else:
@@ -282,6 +277,7 @@ def train_PG(exp_name='',
     #========================================================================================#
 
     total_timesteps = 0
+    col = PathCollector(sess,sy_sampled_ac,sy_ob_no,max_path_length)
 
     for itr in range(n_iter):
         print("********** Iteration %i ************"%itr)
@@ -291,7 +287,6 @@ def train_PG(exp_name='',
         paths = []
         while True:
             n_threads = n_threads_to_run(timesteps_this_batch)
-            col = PathCollector(timesteps_this_batch,min_timesteps_per_batch,sess,sy_sampled_ac,sy_ob_no,max_path_length)
             if threads==1:
                 path = col.__call__(env,animate=(animate and len(paths) == 0 and itr%10))
                 paths.append(path)
@@ -478,7 +473,6 @@ def main():
     parser.add_argument('--threads', '-th', type=int, default=1)
     parser.add_argument('--max_threads_pool', '-max_tp', type=int, default=16)
     parser.add_argument('--thread_timeout', '-th_to', type=int, default=None)
-    parser.add_argument('--min_timesteps_per_path', '-min_st_p', type=int, default=100)
     parser.add_argument('--record', action='store_true')
     args = parser.parse_args()
 
@@ -515,7 +509,6 @@ def main():
                 threads=args.threads,
                 max_threads_pool=args.max_threads_pool,
                 thread_timeout=args.thread_timeout,
-                min_timesteps_per_path=args.min_timesteps_per_path,
                 record=args.record
                 )
         # Awkward hacky process runs, because Tensorflow does not like
