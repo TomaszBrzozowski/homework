@@ -35,7 +35,6 @@ def build_mlp(
     #
     # Hint: use tf.layers.dense
     #========================================================================================#
-
     with tf.variable_scope(scope):
         out = input_placeholder
         for i in range(n_layers):
@@ -57,6 +56,8 @@ class EnvList(gym.Env):
         return isinstance(self.envs[0].action_space,gym.spaces.Discrete)
     def reset(self,i=0):
         return self.envs[i].reset()
+    def render(self,i=0,**kwargs):
+        return self.envs[i].render(**kwargs)
     def step(self, action,i=0):
         return self.envs[i].step(action)
 
@@ -230,7 +231,7 @@ def train_PG(exp_name='',
 
     else:
         sy_mean = build_mlp(sy_ob_no,ac_dim,'cont_policy',n_layers=n_layers,size=size)
-        sy_logstd = tf.get_variable('logstd',shape=tf.shape(sy_mean))
+        sy_logstd = tf.get_variable('logstd',shape=[ac_dim],dtype=np.float32)
         sy_std = tf.exp(sy_logstd)
         sy_sampled_ac = sy_mean + tf.multiply(tf.random_normal(shape=tf.shape(sy_mean)),sy_std)
         mvn = tf.contrib.distributions.MultivariateNormalDiag(loc=sy_mean,scale_diag=sy_std)
