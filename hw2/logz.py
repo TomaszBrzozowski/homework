@@ -73,7 +73,7 @@ def save_params(params):
     with open(osp.join(G.output_dir, "params.json"), 'w') as out:
         out.write(json.dumps(params, separators=(',\n','\t:\t'), sort_keys=True))
 
-def pickle_tf_vars():  
+def pickle_tf_vars():
     """
     Saves tensorflow variables
     Requires them to be initialized first, also a default session must exist
@@ -81,9 +81,9 @@ def pickle_tf_vars():
     _dict = {v.name : v.eval() for v in tf.global_variables()}
     with open(osp.join(G.output_dir, "vars.pkl"), 'wb') as f:
         pickle.dump(_dict, f)
-    
 
-def dump_tabular():
+
+def dump_tabular(prec=5):
     """
     Write all of the diagnostics from the current iteration
     """
@@ -101,11 +101,16 @@ def dump_tabular():
         print(fmt%(key, valstr))
         vals.append(val)
     print("-"*n_slashes)
+    col_width = max(15,max([len(header) for header in G.log_headers]) + 1)
     if G.output_file is not None:
         if G.first_row:
-            G.output_file.write("\t".join(G.log_headers))
+            G.output_file.write(
+                "".join("{0:<{l}}".format(str(G.log_headers[i]),l=col_width) for i in range(len(G.log_headers))))
+            # G.output_file.write("\t".join(G.log_headers))
             G.output_file.write("\n")
-        G.output_file.write("\t".join(map(str,vals)))
+        # G.output_file.write("\t".join(map(str,vals)))
+        G.output_file.write("".join("{0:<{d}}".format(vals[i],d=col_width) if type(vals[i]) == int else (
+            "{0:<{d}.{p}f}".format(vals[i],d=col_width,p=prec)) for i in range(len(vals))))
         G.output_file.write("\n")
         G.output_file.flush()
     G.log_current_row.clear()

@@ -67,7 +67,8 @@ def get_datasets(fpath, condition=None):
             exp_name = params['exp_name']
             
             log_path = os.path.join(root,'log.txt')
-            experiment_data = pd.read_table(log_path)
+            # experiment_data = pd.read_table(log_path)
+            experiment_data = pd.read_table(log_path,delim_whitespace=True)
 
             experiment_data.insert(
                 len(experiment_data.columns),
