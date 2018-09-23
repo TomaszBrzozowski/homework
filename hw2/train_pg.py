@@ -105,14 +105,15 @@ def train_PG(exp_name='',
              normalize_advantages=True,
              nn_baseline=False,
              seed=0,
-             # network arguments
-             n_layers=1,
-             size=32,
+             gae=True,
+             lambd=1.0,
              threads=1,
              max_threads_pool=16,
              thread_timeout=None,
-             min_timesteps_per_path=10,
-             record=False
+             record=False,
+             # network arguments
+             n_layers=1,
+             size=32,
              ):
 
     def n_threads_to_run(timesteps_this_batch):
@@ -250,6 +251,7 @@ def train_PG(exp_name='',
     # Optional Baseline
     #========================================================================================#
 
+    if gae: nn_baseline = True
     if nn_baseline:
         baseline_prediction = tf.squeeze(build_mlp(
                                 sy_ob_no,
@@ -385,10 +387,24 @@ def train_PG(exp_name='',
             # (mean and std) of the current or previous batch of Q-values. (Goes with Hint
             # #bl2 below.)
 
-            b_n = np.array(sess.run(baseline_prediction,feed_dict={sy_ob_no:ob_no}))
-            q_n_mean, q_n_std = np.mean(q_n),np.std(q_n)
-            b_n = b_n*q_n_std+q_n_mean
-            adv_n = q_n - b_n
+            b_n = np.array(sess.run(baseline_prediction,feed_dict={sy_ob_no: ob_no}))
+            b_n = b_n * np.std(q_n) + np.mean(q_n)
+
+            if gae:
+                adv_ns = []
+                for i,path in enumerate(paths):
+                    path_len = pathlength(path)
+                    rews = path['reward']
+                    gamma_discs = np.power(gamma,np.arange(path_len))
+                    gamma_lambda_discs = np.multiply(gamma_discs,np.power(lambd,np.arange(path_len)))
+                    deltas = rews[:-1] + gamma * b_n[i + 1:i + path_len] - b_n[i:i + path_len - 1]
+                    adv_n = [np.sum(gamma_lambda_discs[:path_len - 1 - t] * deltas[t:]) for t in
+                             range(path_len - 1)] + [0]
+                    adv_ns.append(adv_n)
+                adv_n = np.concatenate(adv_ns)
+                q_gae = np.array(adv_n + b_n)
+            else:
+                adv_n = q_n - b_n
         else:
             adv_n = q_n.copy()
 
@@ -400,8 +416,7 @@ def train_PG(exp_name='',
         if normalize_advantages:
             # On the next line, implement a trick which is known empirically to reduce variance
             # in policy gradient methods: normalize adv_n to have mean zero and std=1.
-            adv_n_mean, adv_n_std = np.mean(adv_n),np.std(adv_n)
-            adv_n = (adv_n-adv_n_mean)/(adv_n_std+CONST)
+            adv_n = (adv_n - np.mean(adv_n)) / (np.std(adv_n) + CONST)
 
         #====================================================================================#
         #                           ----------SECTION 5----------
@@ -417,8 +432,14 @@ def train_PG(exp_name='',
             #
             # Hint #bl2: Instead of trying to target raw Q-values directly, rescale the
             # targets to have mean zero and std=1. (Goes with Hint #bl1 above.)
-            q_n = (q_n-q_n_mean)/(q_n_std+CONST)
-            _ = sess.run([baseline_update_op],feed_dict={sy_ob_no:ob_no,sy_bl_target_n:q_n})
+            # experiment with different targets
+            # q_n = (q_n - np.mean(q_n)) / (np.std(q_n) + CONST)
+            q_n = (q_n - np.mean(q_gae)) / (np.std(q_gae) + CONST)
+            # q_n = (q_gae - np.mean(q_gae)) / (np.std(q_gae) + CONST)
+            # q_n = (q_gae - np.mean(q_n)) / (np.std(q_n) + CONST)
+            # q_n = (b_n-np.mean(q_n))/(np.std(q_n)+CONST)
+            # q_n = (b_n-np.mean(q_gae))/(np.std(q_gae)+CONST)
+            _ = sess.run([baseline_update_op],feed_dict={sy_ob_no: ob_no,sy_bl_target_n: q_n})
 
         #====================================================================================#
         #                           ----------SECTION 4----------
@@ -439,8 +460,6 @@ def train_PG(exp_name='',
         ep_lengths = [pathlength(path) for path in paths]
         logz.log_tabular("Time", time.time() - start)
         logz.log_tabular("Iteration", itr)
-        logz.log_tabular("Loss", l)
-        logz.log_tabular("Loss updated", l_upd)
         logz.log_tabular("AverageReturn", np.mean(returns))
         logz.log_tabular("StdReturn", np.std(returns))
         logz.log_tabular("MaxReturn", np.max(returns))
@@ -449,7 +468,9 @@ def train_PG(exp_name='',
         logz.log_tabular("EpLenStd", np.std(ep_lengths))
         logz.log_tabular("TimestepsThisBatch", timesteps_this_batch)
         logz.log_tabular("TimestepsSoFar", total_timesteps)
-        logz.dump_tabular()
+        logz.log_tabular("Loss", l)
+        logz.log_tabular("Loss updated", l_upd)
+        logz.dump_tabular(prec=8)
         logz.pickle_tf_vars()
 
 
@@ -459,6 +480,7 @@ def main():
     parser.add_argument('env_name', type=str)
     parser.add_argument('--exp_name', type=str, default='vpg')
     parser.add_argument('--render', action='store_true')
+    parser.add_argument('--logdir', '-dir', type=str, default='data')
     parser.add_argument('--discount', type=float, default=1.0)
     parser.add_argument('--n_iter', '-n', type=int, default=100)
     parser.add_argument('--batch_size', '-b', type=int, default=1000)
@@ -471,16 +493,18 @@ def main():
     parser.add_argument('--n_experiments', '-e', type=int, default=1)
     parser.add_argument('--n_layers', '-l', type=int, default=1)
     parser.add_argument('--size', '-s', type=int, default=32)
+    parser.add_argument('--gae','-gae',action='store_true')
+    parser.add_argument('--lambd','-ld',type=float,default=1.0)
     parser.add_argument('--threads', '-th', type=int, default=1)
     parser.add_argument('--max_threads_pool', '-max_tp', type=int, default=16)
     parser.add_argument('--thread_timeout', '-th_to', type=int, default=None)
     parser.add_argument('--record', action='store_true')
     args = parser.parse_args()
 
-    if not(os.path.exists('data')):
-        os.makedirs('data')
+    if not(os.path.exists(args.logdir)):
+        os.makedirs(args.logdir)
     logdir = args.exp_name + '_' + args.env_name + '_' + time.strftime("%d-%m-%Y_%H-%M-%S")
-    logdir = os.path.join('data', logdir)
+    logdir = os.path.join(args.logdir, logdir)
     if not(os.path.exists(logdir)):
         os.makedirs(logdir)
 
@@ -507,6 +531,8 @@ def main():
                 seed=seed,
                 n_layers=args.n_layers,
                 size=args.size,
+                gae=args.gae,
+                lambd=args.lambd,
                 threads=args.threads,
                 max_threads_pool=args.max_threads_pool,
                 thread_timeout=args.thread_timeout,
