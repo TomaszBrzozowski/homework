@@ -46,10 +46,11 @@ def pathlength(path):
     return len(path["reward"])
 
 class EnvList(gym.Env):
-    def __init__(self, env_name, n_envs, logdir=None, record=False):
+    def __init__(self, env_name, n_envs, logdir=None, record=None):
         self.envs = [gym.make(env_name) for _ in range(n_envs)]
-        if record and logdir:
-            self.envs = [wrappers.Monitor(self.envs[i],logdir,force=True,mode='evaluation') for i in self.envs]
+        if record is not None and logdir:
+            vid_call = None if record < 1 else lambda id: id%record == 0
+            self.envs[0] = wrappers.Monitor(self.envs[0],logdir,force=True,video_callable=vid_call,mode='evaluation')
         self.action_space = self.envs[0].action_space.n if self.discrete() else self.envs[0].action_space.shape[0]
         self.observation_space = self.envs[0].observation_space.shape[0]
     def discrete(self):
@@ -110,7 +111,7 @@ def train_PG(exp_name='',
              threads=1,
              max_threads_pool=16,
              thread_timeout=None,
-             record=False,
+             record=None,
              # network arguments
              n_layers=1,
              size=32,
@@ -144,7 +145,7 @@ def train_PG(exp_name='',
     max_path_length = max_path_length or gym.make(env_name).spec.max_episode_steps
 
     # Make the gym environment
-    env = EnvList(env_name,n_threads_to_run(0),logdir,record)
+    env = EnvList(env_name,n_threads_to_run(0),logdir,record if threads==1 else None)
 
     # Is this env continuous, or discrete?
     discrete = env.discrete()
@@ -498,7 +499,7 @@ def main():
     parser.add_argument('--threads', '-th', type=int, default=1)
     parser.add_argument('--max_threads_pool', '-max_tp', type=int, default=16)
     parser.add_argument('--thread_timeout', '-th_to', type=int, default=None)
-    parser.add_argument('--record', action='store_true')
+    parser.add_argument('--record', '-rec', type=int, default=None)
     args = parser.parse_args()
 
     if not(os.path.exists(args.logdir)):
