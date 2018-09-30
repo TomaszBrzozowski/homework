@@ -10,7 +10,7 @@ from gym import wrappers
 from pathos.multiprocessing import ProcessingPool
 from concurrent.futures import ThreadPoolExecutor,as_completed
 
-CONST = 1e-13
+CONST = 1e-15
 #============================================================================================#
 # Utilities
 #============================================================================================#
@@ -111,6 +111,10 @@ def train_PG(exp_name='',
              threads=1,
              max_threads_pool=16,
              thread_timeout=None,
+             offpol=False,
+             n_it_pol = 1,
+             n_it_pol_fn=None,
+             wis=True,
              record=None,
              # network arguments
              n_layers=1,
@@ -134,7 +138,7 @@ def train_PG(exp_name='',
     args = inspect.getargspec(train_PG)[0]
     # args = inspect.signature(train_PG).parameters
     locals_ = locals()
-    params = {k: locals_[k] if k in locals_ else None for k in args}
+    params = {k: locals_[k] if (k in locals_ and not callable(locals_[k]) )else None for k in args}
     logz.save_params(params)
 
     # Set random seeds
@@ -183,6 +187,7 @@ def train_PG(exp_name='',
         sy_ac_na = tf.placeholder(shape=[None], name="ac", dtype=tf.int32)
     else:
         sy_ac_na = tf.placeholder(shape=[None, ac_dim], name="ac", dtype=tf.float32)
+    sy_prob_old = tf.placeholder(shape=[None],name='pol_old',dtype=tf.float32)
 
     # Define a placeholder for advantages
     sy_adv_n = tf.placeholder(shape=[None], name="adv", dtype=tf.float32)
@@ -226,25 +231,31 @@ def train_PG(exp_name='',
     #
     #========================================================================================#
 
+    if n_it_pol < 1 or not offpol: n_it_pol=1
     if discrete:
         sy_logits_na = build_mlp(sy_ob_no,ac_dim,'disc_policy',n_layers,size)
-        sy_sampled_ac = tf.squeeze(tf.multinomial(sy_logits_na,1),axis=1)
-        sy_logprob_n = tf.nn.sparse_softmax_cross_entropy_with_logits(labels=sy_ac_na,logits=sy_logits_na)
-
+        sy_sampled_ac = tf.squeeze(tf.multinomial(tf.log(tf.nn.softmax(sy_logits_na)),1),axis=1)
+        sy_logprob_n = -tf.nn.sparse_softmax_cross_entropy_with_logits(labels=sy_ac_na,logits=sy_logits_na)
+        sy_prob_n = tf.exp(sy_logprob_n) if offpol else sy_logprob_n
     else:
         sy_mean = build_mlp(sy_ob_no,ac_dim,'cont_policy',n_layers=n_layers,size=size)
         sy_logstd = tf.get_variable('logstd',shape=[ac_dim],dtype=np.float32)
         sy_std = tf.exp(sy_logstd)
         sy_sampled_ac = sy_mean + tf.multiply(tf.random_normal(shape=tf.shape(sy_mean)),sy_std)
         mvn = tf.contrib.distributions.MultivariateNormalDiag(loc=sy_mean,scale_diag=sy_std)
-        sy_logprob_n = -mvn.log_prob(sy_ac_na)
+        sy_prob_n = mvn.prob(sy_ac_na) if offpol else mvn.log_prob(sy_ac_na)
 
     #========================================================================================#
     #                           ----------SECTION 4----------
     # Loss Function and Training Operation
     #========================================================================================#
 
-    loss = tf.reduce_mean(tf.multiply(sy_logprob_n,sy_adv_n))
+    if offpol:
+        sy_policy_n = sy_prob_n / (sy_prob_old + CONST)
+        loss = -tf.multiply(sy_policy_n,sy_adv_n)
+        loss = tf.reduce_sum(loss)/tf.reduce_sum(sy_policy_n) if wis else tf.reduce_mean(loss)
+    else:
+        loss = tf.reduce_mean(-tf.multiply(sy_prob_n,sy_adv_n))
     update_op = tf.train.AdamOptimizer(learning_rate).minimize(loss)
 
     #========================================================================================#
@@ -282,7 +293,7 @@ def train_PG(exp_name='',
 
     total_timesteps = 0
     col = PathCollector(sess,sy_sampled_ac,sy_ob_no,max_path_length)
-
+    total_n_it_pol = 0
     for itr in range(n_iter):
         print("********** Iteration %i ************"%itr)
 
@@ -453,14 +464,27 @@ def train_PG(exp_name='',
         # For debug purposes, you may wish to save the value of the loss function before
         # and after an update, and then log them below.
 
-        l,_ = sess.run([loss,update_op],feed_dict={sy_ob_no:ob_no,sy_ac_na:ac_na,sy_adv_n:adv_n})
-        l_upd = sess.run(loss,feed_dict={sy_ob_no:ob_no,sy_ac_na:ac_na,sy_adv_n:adv_n})
+        print('pg n_it_pol',n_it_pol)
+        curr_n_it_pol = n_it_pol_fn(itr) if n_it_pol_fn else n_it_pol
+        total_n_it_pol+=curr_n_it_pol
+        print('pg curr_n_it_pol',curr_n_it_pol)
+
+        policy_feed_dict = {sy_ob_no:ob_no,sy_ac_na:ac_na}
+        loss_feed_dict = {**policy_feed_dict,sy_adv_n:adv_n}
+        if offpol:
+            policy_old = sess.run(sy_prob_n,feed_dict=policy_feed_dict)
+            loss_feed_dict = {**loss_feed_dict,sy_prob_old:policy_old}
+        l = sess.run(loss,feed_dict=loss_feed_dict)
+        for off_it in range(curr_n_it_pol):
+            _ = sess.run(update_op,feed_dict=loss_feed_dict)
+        l_upd = sess.run(loss,feed_dict=loss_feed_dict)
 
         # Log diagnostics
         returns = [path["reward"].sum() for path in paths]
         ep_lengths = [pathlength(path) for path in paths]
         logz.log_tabular("Time", time.time() - start)
         logz.log_tabular("Iteration", itr)
+        logz.log_tabular("PolicyIter", total_n_it_pol - 1)
         logz.log_tabular("AverageReturn", np.mean(returns))
         logz.log_tabular("StdReturn", np.std(returns))
         logz.log_tabular("MaxReturn", np.max(returns))
@@ -499,8 +523,20 @@ def main():
     parser.add_argument('--threads', '-th', type=int, default=1)
     parser.add_argument('--max_threads_pool', '-max_tp', type=int, default=16)
     parser.add_argument('--thread_timeout', '-th_to', type=int, default=None)
+    parser.add_argument('--offpol','-ofp',action='store_true')
+    parser.add_argument('--n_iter_pol','-np',type=int,default=1)
+    parser.add_argument('--n_iter_pol_sched','-nps',type=str,default='const',choices=['const', 'exp_dec'])
+    parser.add_argument('--n_iter_pol_exp_base','-npexpb',type=int,default=5)
+    parser.add_argument('--n_iter_pol_exp_decay','-npexpd',type=float,default=0.95)
+    parser.add_argument('--weight_importance_samp','-wis',action='store_true')
     parser.add_argument('--record', '-rec', type=int, default=None)
     args = parser.parse_args()
+
+    it_pol_fn = None
+    if args.offpol:
+        if args.n_iter_pol_sched=='exp_dec':
+            it_pol_fn = lambda it: \
+                int(np.ceil(args.n_iter_pol * pow(args.n_iter_pol_exp_decay,it / args.n_iter_pol_exp_base)))
 
     if not(os.path.exists(args.logdir)):
         os.makedirs(args.logdir)
@@ -537,6 +573,10 @@ def main():
                 threads=args.threads,
                 max_threads_pool=args.max_threads_pool,
                 thread_timeout=args.thread_timeout,
+                offpol=args.offpol,
+                n_it_pol=args.n_iter_pol,
+                n_it_pol_fn=it_pol_fn,
+                wis=args.weight_importance_samp,
                 record=args.record
                 )
         # Awkward hacky process runs, because Tensorflow does not like
