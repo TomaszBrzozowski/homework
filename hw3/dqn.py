@@ -27,7 +27,8 @@ def learn(env,
           frame_history_len=4,
           target_update_freq=10000,
           grad_norm_clipping=10,
-          out_dir=None):
+          out_dir=None,
+          double_q=True):
     """Run Deep Q-learning algorithm.
 
     You can specify your own convnet using q_func.
@@ -132,16 +133,23 @@ def learn(env,
     # q_func_vars = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope='q_func')
     # Older versions of TensorFlow may require using "VARIABLES" instead of "GLOBAL_VARIABLES"
     ######
+    def q_online(obs_float):
+        return q_func(obs_float,num_actions,scope="online_q_func",reuse=tf.AUTO_REUSE)
 
     # Q-function network and target network
-    q_t = q_func(obs_t_float,num_actions,scope="q_func",reuse=False)
-    q_func_vars = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES,scope='q_func')
+    q_online_t = q_online(obs_t_float)
+    q_online_tp1 = q_online(obs_tp1_float)
+    q_func_vars = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES,scope='online_q_func')
     q_target = q_func(obs_tp1_float,num_actions,scope="target_q_func",reuse=False)
     target_q_func_vars = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES,scope='target_q_func')
-    # training error
-    q_t_act = tf.reduce_sum(q_t * tf.one_hot(act_t_ph,num_actions),axis=1)
-    q_t_act_target = rew_t_ph + gamma * tf.reduce_max(q_target,axis=1) * (1.0 - done_mask_ph)
-    total_error = tf.reduce_mean(huber_loss(q_t_act_target - q_t_act))
+    # Bellman training error
+    if double_q:
+        q_max = gather_2d(q_target,tf.argmax(q_online_tp1,axis=1,output_type=tf.int32))
+    else:
+        q_max = tf.reduce_max(q_target,axis=1)
+    target = rew_t_ph + gamma * q_max * (1.0 - done_mask_ph)
+    q_t_act = gather_2d(q_online_t,act_t_ph)
+    total_error = tf.reduce_mean(huber_loss(target - q_t_act))
     ######
 
     # construct optimization op (with gradient clipping)
@@ -213,7 +221,7 @@ def learn(env,
         if random.uniform(0,1) < exploration.value(t) or not model_initialized:
             action = np.random.choice(num_actions)
         else:
-            action = np.argmax(session.run(q_t,feed_dict={obs_t_ph: last_obs[None]})[0])
+            action = np.argmax(session.run(q_online_t,feed_dict={obs_t_ph: last_obs[None]})[0])
 
         last_obs,reward,done,info = env.step(action)
         replay_buffer.store_effect(idx,action,reward,done)
@@ -294,7 +302,10 @@ def learn(env,
             print("exploration %f" % exploration.value(t))
             print("learning_rate %f" % optimizer_spec.lr_schedule.value(t))
             mean_rew_summ = tf.Summary(value=[tf.Summary.Value(tag='mean_rew',simple_value=mean_episode_reward)])
-            best_mean_rew_summ = tf.Summary(value=[tf.Summary.Value(tag='best_mean_rew',simple_value=mean_episode_reward)])
+            best_mean_rew_summ = tf.Summary(value=[tf.Summary.Value(tag='best_mean_rew',simple_value=best_mean_episode_reward)])
             writer.add_summary(mean_rew_summ, global_step=t)
             writer.add_summary(best_mean_rew_summ, global_step=t)
             sys.stdout.flush()
+
+def gather_2d(vectors,indices):
+    return tf.gather_nd(vectors, tf.stack([tf.range(tf.shape(vectors)[0]), indices], axis=1))
