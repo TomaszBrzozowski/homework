@@ -12,25 +12,18 @@ class Controller():
 
 
 class RandomController(Controller):
-	def __init__(self, env):
-		""" YOUR CODE HERE """
-		pass
+	def __init__(self,env):
+		self.env = env
+		super().__init__()
 
 	def get_action(self, state):
-		""" YOUR CODE HERE """
-		""" Your code should randomly sample an action uniformly from the action space """
-		pass
-
+		""" randomly sample an action uniformly from the action space """
+		return self.env.action_space.sample()
 
 class MPCcontroller(Controller):
 	""" Controller built using the MPC method outlined in https://arxiv.org/abs/1708.02596 """
-	def __init__(self, 
-				 env, 
-				 dyn_model, 
-				 horizon=5, 
-				 cost_fn=None, 
-				 num_simulated_paths=10,
-				 ):
+	def __init__(self,env,dyn_model,horizon=5,cost_fn=None,num_simulated_paths=10):
+		super().__init__()
 		self.env = env
 		self.dyn_model = dyn_model
 		self.horizon = horizon
@@ -38,6 +31,21 @@ class MPCcontroller(Controller):
 		self.num_simulated_paths = num_simulated_paths
 
 	def get_action(self, state):
-		""" YOUR CODE HERE """
-		""" Note: be careful to batch your simulations through the model for speed """
+		""" batch simulations through the model for speed """
+		rand_cont = RandomController(self.env)
 
+		obs, actions, next_obs = [],[],[]
+		new_obs = np.repeat(state[np.newaxis,:],self.num_simulated_paths,0)
+
+		for _ in range(self.horizon):
+			new_actions = [rand_cont.get_action(state) for _ in range(self.num_simulated_paths)]
+			obs.append(new_obs)
+			new_obs = self.dyn_model.predict(obs,actions)
+			next_obs.append(new_obs)
+			actions.append(new_actions)
+
+		obs,actions,next_obs = np.array(obs),np.array(actions),np.array(next_obs)
+		costs = trajectory_cost_fn(self.cost_fn,obs,actions,next_obs)
+
+		best_path_id = np.argmin(costs)
+		return actions[0][best_path_id]

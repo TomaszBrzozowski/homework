@@ -10,6 +10,8 @@ import os
 import copy
 import matplotlib.pyplot as plt
 from cheetah_env import HalfCheetahEnvNew
+from util import pbar
+
 
 def sample(env, 
            controller, 
@@ -24,6 +26,33 @@ def sample(env,
     """
     paths = []
     """ YOUR CODE HERE """
+    print('Running {} paths = {}...'.format(controller.__class__.__name__,num_paths))
+    obs,actions,next_obs,rewards = [],[],[],[]
+    if not verbose: pb = pbar(num_paths)
+
+    for i in range(num_paths):
+        if verbose: print('Roll-out nr: ',i)
+        totalr = 0.
+        steps = 0
+        ob = env.reset()
+        for _ in range(horizon):
+            obs.append(ob)
+            action = controller.get_action(ob)
+            actions.append(action)
+            ob,r,done,_ = env.step(action)
+            rewards.append(r)
+            next_obs.append(ob)
+            if done:
+                break
+            totalr += r
+            steps += 1
+            if render:
+                env.render()
+            if verbose and (steps % 100) == 0: print("    steps %i/%i"%(steps, horizon))
+        path = {'observations': np.array(obs), 'actions': np.array(actions), 'next_observations': np.array(next_obs),
+                       'rewards': np.array(rewards),'return': np.array(totalr)}
+        paths.append(path)
+        if not verbose: pb.update()
 
     return paths
 
@@ -38,6 +67,12 @@ def compute_normalization(data):
     """
 
     """ YOUR CODE HERE """
+    obs = np.vstack([path['observations'] for path in data])
+    actions = np.vstack([path['actions'] for path in data])
+    next_obs = np.vstack([path['next_obs'] for path in data])
+
+    mean_obs,std_obs,mean_deltas, std_deltas= np.mean(obs,0), np.std(obs,0), np.mean(next_obs-obs,0), np.std(next_obs-obs,0)
+    mean_action,std_action = np.mean(actions,0), np.std(actions,0)
     return mean_obs, std_obs, mean_deltas, std_deltas, mean_action, std_action
 
 
@@ -46,6 +81,13 @@ def plot_comparison(env, dyn_model):
     Write a function to generate plots comparing the behavior of the model predictions for each element of the state to the actual ground truth, using randomly sampled actions. 
     """
     """ YOUR CODE HERE """
+    data = sample(env,RandomController(env),num_paths=1)
+    pred_states = dyn_model.predict(data[0]['observations'],data[0]['actions'])
+    losses = np.sum((pred_states - data[0]['next_observations'])**2)
+    plt.plot(losses)
+    plt.ylabel('predicted states squared error')
+    plt.xlabel('timestep')
+    plt.show()
     pass
 
 def train(env, 
@@ -112,7 +154,7 @@ def train(env,
     random_controller = RandomController(env)
 
     """ YOUR CODE HERE """
-
+    data = sample(env,random_controller,num_paths_random,env_horizon,render)
 
     #========================================================
     # 
@@ -121,8 +163,9 @@ def train(env,
     # (where deltas are o_{t+1} - o_t). These will be used
     # for normalizing inputs and denormalizing outputs
     # from the dynamics network. 
-    # 
-    normalization = """ YOUR CODE HERE """
+    #
+    """ YOUR CODE HERE """
+    normalization = compute_normalization(data)
 
 
     #========================================================
@@ -163,9 +206,17 @@ def train(env,
     # 
     for itr in range(onpol_iters):
         """ YOUR CODE HERE """
+        # refit to current dataset
+        dyn_model.fit(data)
+        # take onpolicy samples
+        onpol_samples = sample(env,mpc_controller,num_paths_onpol,env_horizon,render)
+        # aggregate to dataset
+        np.vstack((data,onpol_samples))
 
-
-
+        costs,returns = [],[]
+        for path in onpol_samples:
+            costs.append(path_cost(cost_fn,path))
+            returns.append(path['returns'])
         # LOGGING
         # Statistics for performance of MPC policy using
         # our learned dynamics model
